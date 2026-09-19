@@ -1,0 +1,80 @@
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Expects a server-side `.env` (from .env.production.example). Do not publish
+# Postgres/Redis/Kafka to the public internet.
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+
+  kafka:
+    ports: !reset []
+    restart: unless-stopped
+
+  # Public-ish API ports behind your TLS reverse proxy (Caddy/nginx).
+  # Prefer proxying by hostname rather than opening all of these long-term.
+  gateway:
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  auth_service:
+    ports:
+      - "8006:8006"
+    restart: unless-stopped
+
+  merchant_admin:
+    ports:
+      - "8003:8003"
+    restart: unless-stopped
+
+  payment_log_service:
+    ports:
+      - "8008:8008"
+    restart: unless-stopped
+
+  offer_engine:
+    ports:
+      - "8004:8004"
+    restart: unless-stopped
+
+  reservation_service:
+    ports: !reset []
+    restart: unless-stopped
+
+  payment_service:
+    ports: !reset []
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_AUTH_SERVICE_URL: ${VITE_AUTH_SERVICE_URL:-http://localhost:8006}
+        VITE_ADMIN_SERVICE_URL: ${VITE_ADMIN_SERVICE_URL:-http://localhost:8003}
+        VITE_GATEWAY_URL: ${VITE_GATEWAY_URL:-http://localhost:8000}
+        VITE_PAYMENT_LOG_SERVICE_URL: ${VITE_PAYMENT_LOG_SERVICE_URL:-http://localhost:8008}
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      auth_service:
+        condition: service_healthy
+      merchant_admin:
+        condition: service_healthy
+      payment_log_service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

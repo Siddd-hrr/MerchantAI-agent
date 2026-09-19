@@ -1,0 +1,17 @@
+name,brand,weight_per_unit,price_paise,quantity_available,expiry_date
+Beans,FreshFarm,kg,14500,18,2026-12-31
+Beans,FreshFarm,kg,14500,10,2026-06-30
+Beans,HomeSelect,kg,13800,0,2026-10-15
+Milk,DairyGold,L,6200,25,2026-08-31
+Milk,Amul,L,6500,1,2026-06-30
+Rice,Fortune,kg,32500,12,2026-11-30
+Rice,IndiaGate,kg,35900,8,2026-09-30
+Sugar,Madhur,kg,4900,20,2027-01-31
+Sugar,Tata,kg,5200,14,2026-12-15
+Atta,Ashirvaad,kg,26800,16,2026-10-31
+Atta,Pillsbury,kg,27900,11,2026-11-15
+Curd,Nandini,g,3800,10,2026-07-15
+Curd,Amul,g,4200,9,2026-07-20
+Kidney Beans,Tata Sampann,g,11500,7,2026-12-31
+Kidney Beans,24 Mantra,g,12900,5,2026-11-30
+Poha,DesiChoice,kg,7200,22,2026-08-31
