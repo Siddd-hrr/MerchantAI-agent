@@ -1,0 +1,19 @@
+{
+  "name": "Merchant AI Agent",
+  "description": "Grocery ordering merchant agent. Consumer agents connect per merchant via connect URL, then POST turns to the converse API.",
+  "protocol": "merchant-ai-converse-v1",
+  "contact": {
+    "connect_url_template": "{origin}/connect/{merchant_id}",
+    "converse_method": "POST",
+    "converse_path": "/v1/converse",
+    "converse_base_url_env": "VITE_GATEWAY_URL",
+    "human_docs_path": "/agent.json",
+    "well_known_path": "/.well-known/agent.json"
+  },
+  "required_fields": ["consumer_agent_id", "message", "human_sign_mandate"],
+  "optional_fields": ["merchant_id", "session_id"],
+  "notes": [
+    "Each merchant shares their own connect link after signup (Home → Consumer agent connect link).",
+    "Mandate issuer must be in that merchant trusted_issuers list."
+  ]
+}
