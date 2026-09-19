@@ -8,7 +8,7 @@ A niche prototype for **agent-to-agent (A2A) grocery / retail ordering**: a Cons
 
 ## System design
 
-![Merchant AI Agent system architecture](docs/images/system-design.jpg)
+![Merchant AI Agent system architecture](docs/images/system-design.png)
 
 ---
 
@@ -219,7 +219,7 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 - `frontend/` — Vite app (`/agent.json`, connect, chat, invoices)
 - `docs/DEPLOY.md` — VPS + GitHub Actions
 - `docs/GITHUB_SECRETS.md` — secret checklist
-- `docs/images/system-design.jpg` — architecture diagram used in this README
+- `docs/images/system-design.png` — architecture diagram used in this README
 
 ---
 
