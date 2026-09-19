@@ -1,21 +1,168 @@
-# Merchant AI Agent (Phase 1 Demo)
+# Merchant AI Agent
 
-**Project root:** `Merchant-AI-Agent/` (this folder)
+> **Agent talks to agent. Stock reserved. Payment settled.**
 
-For a plain-English explanation of how the AI built this system, the conversation logic, and every edge case tested, read:
+A niche prototype for **agent-to-agent (A2A) grocery / retail ordering**: a Consumer AI Agent converses with a Merchant AI Agent to browse catalog, reserve inventory, apply offers, and complete payment—without a traditional human checkout UI. Built as **plugin-ready infra** that large e-commerce hubs, online stores, or offline retail backends could adopt.
 
-**[`HOW_THE_AGENT_BUILT_THIS.md`](HOW_THE_AGENT_BUILT_THIS.md)**
+**System design:** [Merchant AI Agent architecture (Eraser)](https://app.eraser.io/workspace/09sJqde984kGbD2oYpdq?origin=share)
 
-This repository contains a Phase 1 demo stack for a merchant assistant system:
-- Backend services: `gateway`, `async_worker`, `merchant_agent` (LangGraph), `merchant_admin`
-- Frontend: Vite app in `frontend/`
-- Shared models/schemas, migrations, and test fixtures
+**Project root:** `Merchant-AI-Agent/` (this folder). Deeper build notes: [`docs/HOW_THE_AGENT_BUILT_THIS.md`](docs/HOW_THE_AGENT_BUILT_THIS.md).
 
-The steps below are written for a new contributor to get a working demo quickly.
+---
+
+## 1. What Is Merchant AI Agent?
+
+Merchant AI Agent is the **merchant-side brain** in an A2A commerce loop:
+
+- A **consumer agent** (or our demo chat UI) discovers how to connect, then sends natural-language order turns.
+- The **merchant agent** resolves products against a live catalog, collects delivery fields, handles stockouts/alternatives, surfaces offers, and—on confirmation—creates an invoice, **reserves stock**, and returns a **Razorpay payment link**.
+- Payment confirmation arrives asynchronously via **webhooks → queue → payment-log**, with TTL-based cleanup for abandoned checkouts.
+
+Merchants use a web dashboard to sign up, upload catalog, chat-test the agent, copy a **consumer connect link**, and review invoice audits.
+
+---
+
+## 2. Why We Built This (problem statement)
+
+Checkout and payments were designed for **humans clicking buttons**, not for **agents negotiating and paying on a user’s behalf**.
+
+We noticed the industry moving toward **agentic payments**—including public direction around **NPCI’s agentic payment ecosystem** in India—and decided to build a **focused prototype** of the missing merchant-side layer:
+
+| Gap | What breaks today |
+|-----|-------------------|
+| **A2A commerce** | Agents can chat, but “order + authorize + pay + settle” between agents is immature |
+| **Authority** | Without a **human mandate** bound into the machine conversation, agent spend is unsafe |
+| **Concurrency** | Hot SKUs get **oversold** if inventory is locked poorly under burst traffic |
+| **Abandoned carts** | Unpaid holds must **expire and roll back** without manual ops |
+| **Sync payment pain** | Blocking the agent turn on the payment gateway kills latency and resilience |
+
+**Inspiration / protocols we aligned with:** emerging **APA** (agent payment authorization) and **AP2**-style patterns for mandates and agent turns. We implemented a **working end-to-end path** (discovery → converse → mandate gate → reserve → pay link → webhook audit) as **niche reference infra**—not a certified national rail. Mandate cryptographic verification is still **demo-mocked** in Phase 1 and marked for real AP2/ACP verification before production.
+
+**Who it’s for:** teams building plugins for big commerce platforms, online stores, or offline/retail backends that want an A2A ordering + payment spine they can extend.
+
+---
+
+## 3. Solution (how we address it)
+
+We separate **browse → reserve → pay → confirm** into services with clear ownership (see Eraser diagram):
+
+1. **Discover & connect** — Public `/agent.json` (+ `/.well-known/agent.json`); per-merchant `/connect/{merchant_id}`; `POST /v1/converse`.
+2. **Authorize the agent turn** — Worker verifies a **human-sign mandate** before the merchant graph runs.
+3. **Merchant AI Agent (LangGraph)** — Intent parse, catalog resolve, offers/ReAct tools, availability, field collection, invoice confirmation, finalize.
+4. **Catalog speed** — Redis-cached items in front of Postgres (**~O(1)** on cache hit).
+5. **Stock safety** — Reservation service + reserved-items DB + **TTL**; unpaid holds expire.
+6. **Offers** — Isolated offer engine (own Redis/DB) so promos don’t block the order path.
+7. **Payments** — Payment service builds Razorpay links (credentials from merchant store); **payment-log** consumes webhook queue, loads invoice from Redis TTL cluster, writes **invoice audit**.
+8. **Cleanup** — Async worker scans expired reservations and rolls stock back.
+
+Horizontal scaling targets: gateway → async workers → merchant agent instances.
+
+---
+
+## 4. How a request flows
+
+| Step | What happens |
+|------|----------------|
+| 1. Discover | Consumer agent fetches `/agent.json` or opens merchant connect link |
+| 2. Converse | `POST /v1/converse` with `consumer_agent_id`, `message`, `human_sign_mandate`, optional `merchant_id` / `session_id` |
+| 3. Mandate | Async worker verifies mandate → forwards to merchant agent |
+| 4. Order dialogue | Agent resolves SKUs, asks for brand/qty/address/phone/name as needed |
+| 5. Confirm | User/agent says Proceed → invoice generated |
+| 6. Reserve + pay | Stock reserved; Razorpay payment link returned in reply |
+| 7. Settle | Razorpay webhook → queue → payment-log → invoice audit |
+| 8. Expire | If no pay before TTL → reservation released, stock restored |
+
+Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `INVOICED` (or `FAILED`).
+
+---
+
+## 5. Technologies used
+
+### Backend
+
+- **Python 3.11+**, **FastAPI**, **Uvicorn**
+- **LangGraph** + **LangChain** + **Gemini** (`langchain-google-genai`) — merchant agent graph
+- **SQLAlchemy async** + **Postgres** — catalog, orders, audits, merchants
+- **Redis** — session/cart state, catalog cache, invoice TTL, mandate replay keys
+- **Kafka** + **aiokafka** — Razorpay webhook pipeline
+- **httpx** — service-to-service calls
+- **PyJWT** / **passlib** — merchant auth
+- **Docker Compose** — full local/prod-shaped stack
+
+### Frontend
+
+- **React** + **TypeScript** + **Vite** + **Tailwind** — landing, auth, catalog upload, chat, invoices, agent discovery
+
+### External
+
+- **Razorpay** — payment links + webhooks
+- **Google Generative AI** — intent / light generation inside the agent
+
+---
+
+## 6. System components
+
+| Component | Responsibility |
+|-----------|----------------|
+| **Gateway** | Public converse API, rate limits, session id assignment |
+| **Async worker** | Mandate gate; forwards verified turns to the agent |
+| **Merchant AI Agent** | LangGraph order pipeline (catalog, offers, reserve, invoice) |
+| **Merchant admin** | Catalog CSV/XLSX upload → items DB (+ cache warm) |
+| **Auth service** | Merchant signup/login/profile JWT |
+| **Reservation service** | Submit invoice / hold stock; TTL-oriented holds |
+| **Payment service** | Create/cancel Razorpay payment links |
+| **Payment-log service** | Webhook ingress, queue consumer, invoice audit APIs |
+| **Offer engine** | Discounts, campaigns, cross-sell style lookups |
+| **Frontend** | Merchant dashboard + public `/agent.json` for consumer agents |
+| **Postgres / Redis / Kafka** | Durable data, hot cache/TTL, async payment events |
+
+---
+
+## 7. How data is stored (short)
+
+| Store | Used for |
+|-------|----------|
+| **Postgres** | Items, merchants, orders, personal memory, invoice audits, offers |
+| **Redis** | Session/order draft, catalog cache, invoice payloads with TTL, mandate replay |
+| **Kafka** | Durable handoff of payment webhooks to payment-log workers |
+
+---
+
+## 8. Technical efficiency (short)
+
+| Area | Technique | Note |
+|------|-----------|------|
+| Catalog reads | Redis over Postgres | ~**O(1)** cache hit |
+| Stock | Reserve-then-pay + TTL | Reduces oversell under concurrency |
+| A2A authority | Mandate on converse | Human authority bound to agent turns |
+| Payments | Webhook + queue | Agent hot path not blocked on gateway RTT |
+| Abandoned carts | TTL + async scanner | Cleanup off the conversational path |
+| Agent | Procedural LangGraph; LLM for parse/intent | Predictable pipeline |
+
+---
+
+## 9. Security notes
+
+- Merchant JWTs for dashboard/invoice-audit APIs
+- Mandate required on converse (demo verification in Phase 1)
+- Secrets only in server `.env` / deploy secrets—never commit `.env`
+- Webhook path designed for async, idempotent-style processing (see payment-log)
+
+---
+
+## 10. Repo layout
+
+- `services/` — gateway, async_worker, merchant_agent, auth, admin, reservation, payment, payment_log, offer_engine
+- `frontend/` — Vite app (`/agent.json`, connect, chat, invoices)
+- `docs/DEPLOY.md` — VPS + GitHub Actions
+- `docs/GITHUB_SECRETS.md` — secret checklist
+
+---
 
 ## Prerequisites
 
 Install these first:
+
 - Python `3.11+`
 - [`uv`](https://docs.astral.sh/uv/)
 - Docker Desktop (daemon running)
@@ -55,6 +202,7 @@ If you do not want to run the full compose stack, run services manually in separ
 - `uvicorn services.merchant_admin.main:app --host 0.0.0.0 --port 8003 --reload`
 
 You still need:
+
 - `uv sync`
 - `alembic upgrade head`
 - `python -m scripts.seed_catalog`
@@ -77,6 +225,8 @@ Start the frontend Vite app:
 - `npm install`
 - `npm run dev`
 
+Consumer agents can also fetch discovery JSON at `/agent.json` and `/.well-known/agent.json` once the frontend is serving.
+
 ## Secrets and environment
 
 - Copy `.env.example` → `.env` for local development. **Never commit `.env`.**
@@ -94,15 +244,11 @@ Run tests from repo root:
 
 - `.\.venv\Scripts\python -m pytest -q`
 
-## Phase 2
+## Phase notes
 
-See [`PHASE2_BUILD_NOTES.md`](PHASE2_BUILD_NOTES.md). Free-tier Gemini is unchanged (`gemini-3.6-flash`).
+See [`docs/PHASE2_BUILD_NOTES.md`](docs/PHASE2_BUILD_NOTES.md) and related docs under `docs/`.
 
-Offer Engine UI: `cd frontend/offer-engine && npm run dev` → http://localhost:5174  
-Offer Engine API: http://localhost:8004  
-Reservation worker health: http://localhost:8005/healthz
+Current intentional constraints:
 
-Current Phase 1 behavior intentionally includes stubs/constraints:
-- Mandate cryptographic verification is mocked for demo behavior.
-- Discounts model/table exists but runtime paths do not currently read discount data.
-- Razorpay payment APIs are not integrated in this phase.
+- Mandate cryptographic verification is mocked for demo behavior (replace with real AP2/ACP verification before production).
+- Offer engine and Razorpay paths are wired for the A2A reserve-and-pay flow; configure live credentials only in server `.env`.
