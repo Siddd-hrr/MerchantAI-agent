@@ -4,9 +4,11 @@
 
 A niche prototype for **agent-to-agent (A2A) grocery / retail ordering**: a Consumer AI Agent converses with a Merchant AI Agent to browse catalog, reserve inventory, apply offers, and complete payment—without a traditional human checkout UI. Built as **plugin-ready infra** that large e-commerce hubs, online stores, or offline retail backends could adopt.
 
-**System design:** [Merchant AI Agent architecture (Eraser)](https://app.eraser.io/workspace/09sJqde984kGbD2oYpdq?origin=share)
-
 **Project root:** `Merchant-AI-Agent/` (this folder). Deeper build notes: [`docs/HOW_THE_AGENT_BUILT_THIS.md`](docs/HOW_THE_AGENT_BUILT_THIS.md).
+
+## System design
+
+![Merchant AI Agent system architecture](docs/images/system-design.png)
 
 ---
 
@@ -44,7 +46,7 @@ We noticed the industry moving toward **agentic payments**—including public di
 
 ## 3. Solution (how we address it)
 
-We separate **browse → reserve → pay → confirm** into services with clear ownership (see Eraser diagram):
+We separate **browse → reserve → pay → confirm** into services with clear ownership (see the system design diagram above):
 
 1. **Discover & connect** — Public `/agent.json` (+ `/.well-known/agent.json`); per-merchant `/connect/{merchant_id}`; `POST /v1/converse`.
 2. **Authorize the agent turn** — Worker verifies a **human-sign mandate** before the merchant graph runs.
@@ -59,7 +61,68 @@ Horizontal scaling targets: gateway → async workers → merchant agent instanc
 
 ---
 
-## 4. How a request flows
+## 4. Human Sign Mandate (what it is, what it grants, how we verify)
+
+### What exactly is a Human Sign Mandate?
+
+A **Human Sign Mandate** is a compact authorization the **human user** gives their **Consumer AI Agent**. The consumer agent must present it on every order turn (`human_sign_mandate` on `POST /v1/converse`).
+
+Think of it as a short digital **power of attorney** for that agent session: it proves a human allowed *this* agent to open contact with a merchant agent and start an A2A commerce conversation. Without it, the merchant side refuses the turn (`MANDATE_INVALID`).
+
+In our wire format the token is **base64-encoded JSON** with these claims (`MandateClaims`):
+
+| Claim | Meaning |
+|-------|---------|
+| `issuer` | Who authorized the consumer agent (must appear on the merchant’s **trusted mandate issuers** list) |
+| `subject` | Who the mandate is about—typically the consumer agent identity |
+| `issued_at` | Unix timestamp when the mandate was issued (used for freshness / max age) |
+| `signature` | Cryptographic proof that the issuer really signed these claims |
+
+Demo clients (chat UI / scripts) build a Phase-1 placeholder mandate; production should replace this with real APA/AP2-style signed mandates.
+
+### What it tells the Merchant AI Agent about permissions
+
+When verification succeeds, the merchant system treats the consumer agent as **human-authorized to contact this merchant**, under the issuer whitelist the merchant configured. Concretely it signals:
+
+1. **Trusted contact** — The agent is not anonymous noise; a known `issuer` backed the session.
+2. **Merchant-controlled allowlist** — Only issuers in that merchant’s `trusted_issuers` (or a carefully enabled global fallback) may talk to this shop.
+3. **Fresh authority** — The mandate is recent enough (`issued_at` within `MANDATE_MAX_AGE_SECONDS`), so old stolen tokens age out.
+4. **Non-replayable proof** — A used signature hash is remembered in Redis so the same mandate cannot be replayed indefinitely.
+5. **Gate before money/stock** — Reservation and payment-link steps only run inside the agent graph after the worker has set `mandate_verified: true`.
+
+**Protocol ambition vs Phase 1:** richer APA/AP2 scopes (max spend, category limits, absolute expiry, real public-key crypto) are the target shape. Today we enforce the **contact gate** fields above; full cryptographic signature verification against an issuer public key is still **mocked** and marked for real AP2/ACP verification before production.
+
+### Verification workflow inside this solution
+
+Implemented in the async worker (`verify_mandate`), before any Merchant AI Agent graph turn:
+
+1. Consumer agent includes `human_sign_mandate` on `POST /v1/converse`.
+2. **Gateway** assigns/keeps `session_id` and forwards to the **async worker**.
+3. Worker **decodes** base64 → JSON and validates `MandateClaims`.
+4. Loads **trusted issuers** for the target `merchant_id` (Redis cache, then Postgres merchant row). If the merchant has no list and global fallback is disabled, verification fails.
+5. Checks `issuer` is in that trusted list.
+6. Checks `issued_at` is not in the future and not older than `MANDATE_MAX_AGE_SECONDS`.
+7. Requires a **non-empty** `signature` (Phase 1 does **not** yet verify a real asymmetric signature—demo accepts any non-empty string after the other checks).
+8. **Replay protection:** computes `sha256(signature)`, looks up Redis key `mandate:seen:{hash}`; if already seen → fail; else set with a short TTL (e.g. 300s).
+9. On **failure** → respond with `MANDATE_INVALID`, write `MANDATE_VERIFY_FAILED` audit; agent graph never runs.
+10. On **success** → forward to the merchant agent with `mandate_verified: true`. The LangGraph pipeline also treats an unverified mandate as a missing required field (“Verified Human Sign Mandate”), so stock reserve / invoice / payment link cannot proceed without the gate.
+
+```text
+Consumer Agent
+  |  human_sign_mandate
+  v
+Gateway  -->  Async Worker (verify_mandate)
+                 |-- fail --> MANDATE_INVALID + audit
+                 |-- ok   --> mandate_verified=true
+                                   v
+                            Merchant AI Agent (LangGraph)
+                                   v
+                         reserve / invoice / payment link
+```
+
+---
+
+## 5. How a request flows
 
 | Step | What happens |
 |------|----------------|
@@ -76,7 +139,7 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 
 ---
 
-## 5. Technologies used
+## 6. Technologies used
 
 ### Backend
 
@@ -100,7 +163,7 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 
 ---
 
-## 6. System components
+## 7. System components
 
 | Component | Responsibility |
 |-----------|----------------|
@@ -118,7 +181,7 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 
 ---
 
-## 7. How data is stored (short)
+## 8. How data is stored (short)
 
 | Store | Used for |
 |-------|----------|
@@ -128,7 +191,7 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 
 ---
 
-## 8. Technical efficiency (short)
+## 9. Technical efficiency (short)
 
 | Area | Technique | Note |
 |------|-----------|------|
@@ -141,7 +204,7 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 
 ---
 
-## 9. Security notes
+## 10. Security notes
 
 - Merchant JWTs for dashboard/invoice-audit APIs
 - Mandate required on converse (demo verification in Phase 1)
@@ -150,12 +213,13 @@ Typical multi-turn statuses: `AWAITING_FIELDS` → `AWAITING_CONFIRMATION` → `
 
 ---
 
-## 10. Repo layout
+## 11. Repo layout
 
 - `services/` — gateway, async_worker, merchant_agent, auth, admin, reservation, payment, payment_log, offer_engine
 - `frontend/` — Vite app (`/agent.json`, connect, chat, invoices)
 - `docs/DEPLOY.md` — VPS + GitHub Actions
 - `docs/GITHUB_SECRETS.md` — secret checklist
+- `docs/images/system-design.png` — architecture diagram used in this README
 
 ---
 
